@@ -137,9 +137,9 @@ if [ -n "$PS1" ] && command -v stty >/dev/null 2>&1; then
 fi
 EOF
 
-# {{PROFILE_INSTALLATIONS}}
+{{PROFILE_INSTALLATIONS}}
 
-# {{LABELS}}
+{{LABELS}}
 
 # Copy init-firewall script
 COPY --chmod=755 init-firewall /home/$USERNAME/init-firewall

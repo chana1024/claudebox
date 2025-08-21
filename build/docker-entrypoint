@@ -308,6 +308,25 @@ else
             
             cd /workspace
             
+            # Prepare MCP configuration arguments for native --mcp-config support
+            mcp_config_args=()
+            
+            # Add user MCP config if available (lower priority)
+            if [[ -f "/tmp/user-mcp-config.json" ]]; then
+                mcp_config_args+=(--mcp-config /tmp/user-mcp-config.json)
+                if [[ "${VERBOSE:-false}" == "true" ]]; then
+                    printf "Loading user MCP servers\n" >&2
+                fi
+            fi
+            
+            # Add project MCP config if available (higher priority - processed last)
+            if [[ -f "/tmp/project-mcp-config.json" ]]; then
+                mcp_config_args+=(--mcp-config /tmp/project-mcp-config.json)
+                if [[ "${VERBOSE:-false}" == "true" ]]; then
+                    printf "Loading project MCP servers\n" >&2
+                fi
+            fi
+            
             # Check if .claude/projects exists and filter out -c/--continue if not
             if [[ ! -d "$HOME/.claude/projects" ]]; then
                 # Filter out -c and --continue flags
@@ -336,17 +355,17 @@ else
             # If no arguments and stdin is a terminal, run claude in interactive mode
             if [[ "${CLAUDEBOX_WRAP_TMUX:-false}" == "true" ]]; then
                 if [[ $# -eq 0 ]] && [[ -t 0 ]]; then
-                    tmux new-session claude
+                    tmux new-session claude "${mcp_config_args[@]}"
                 else
-                    tmux new-session claude "$@"
+                    tmux new-session claude "${mcp_config_args[@]}" "$@"
                 fi
             else
                 if [[ $# -eq 0 ]] && [[ -t 0 ]]; then
-                    # No arguments - just run claude
-                    claude
+                    # No arguments - just run claude with MCP configs
+                    claude "${mcp_config_args[@]}"
                 else
-                    # Has arguments - pass them through
-                    claude "$@"
+                    # Has arguments - pass them through with MCP configs
+                    claude "${mcp_config_args[@]}" "$@"
                 fi
             fi
             

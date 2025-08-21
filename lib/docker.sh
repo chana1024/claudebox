@@ -250,6 +250,127 @@ run_claudebox_container() {
         fi
     fi
     
+    # Parse and prepare MCP servers for native --mcp-config support
+    # Check for jq dependency first - fail fast with clear error message
+    if ! command -v jq >/dev/null 2>&1; then
+        printf "ERROR: jq is required for MCP server configuration but not installed.\n" >&2
+        printf "Please install jq to use MCP server integration:\n" >&2
+        printf "  macOS: brew install jq\n" >&2
+        printf "  Ubuntu/Debian: apt-get install jq\n" >&2
+        printf "  RHEL/CentOS: yum install jq\n" >&2
+        exit 1
+    fi
+    
+    # Helper function to create and merge MCP config files
+    create_mcp_config_file() {
+        local config_file="$1"
+        local temp_file="$2"
+        
+        # Create temporary file with unique name
+        local mcp_file=$(mktemp /tmp/claudebox-mcp-$(date +%s)-$$.json 2>/dev/null || mktemp)
+        mcp_temp_files+=("$mcp_file")
+        
+        # Extract mcpServers if they exist
+        if [[ -f "$config_file" ]] && jq -e '.mcpServers' "$config_file" >/dev/null 2>&1; then
+            if [[ -f "$temp_file" ]]; then
+                # Merge with existing temp file
+                jq -s '.[0].mcpServers * .[1].mcpServers | {mcpServers: .}' \
+                    "$temp_file" "$config_file" > "$mcp_file" 2>/dev/null
+            else
+                # Create new config file
+                jq '{mcpServers: .mcpServers}' "$config_file" > "$mcp_file" 2>/dev/null
+            fi
+            printf "%s" "$mcp_file"
+        else
+            rm -f "$mcp_file"
+            printf ""
+        fi
+    }
+    
+    local user_mcp_file=""
+    local project_mcp_file=""
+    
+    # Track all temporary MCP files for cleanup
+    declare -a mcp_temp_files=()
+    
+    # Set up cleanup trap for temporary MCP config files
+    cleanup_mcp_files() {
+        local file
+        for file in "${mcp_temp_files[@]}"; do
+            if [[ -f "$file" ]]; then
+                rm -f "$file"
+            fi
+        done
+        if [[ -n "$user_mcp_file" ]] && [[ -f "$user_mcp_file" ]]; then
+            rm -f "$user_mcp_file"
+        fi
+        if [[ -n "$project_mcp_file" ]] && [[ -f "$project_mcp_file" ]]; then
+            rm -f "$project_mcp_file"
+        fi
+    }
+    trap cleanup_mcp_files EXIT
+    
+    # Create user MCP config file from ~/.claude.json
+    if [[ -f "$HOME/.claude.json" ]]; then
+        user_mcp_file=$(create_mcp_config_file "$HOME/.claude.json" "")
+        
+        if [[ -n "$user_mcp_file" ]]; then
+            local user_count=$(jq '.mcpServers | length' "$user_mcp_file" 2>/dev/null || echo "0")
+            if [[ "$user_count" -gt 0 ]]; then
+                if [[ "$VERBOSE" == "true" ]]; then
+                    printf "Found %s user MCP servers\n" "$user_count" >&2
+                fi
+                docker_args+=(-v "$user_mcp_file":/tmp/user-mcp-config.json:ro)
+                if [[ "$VERBOSE" == "true" ]]; then
+                    echo "[DEBUG] Mounting user MCP configuration file" >&2
+                fi
+            else
+                rm -f "$user_mcp_file"
+                user_mcp_file=""
+            fi
+        fi
+    fi
+    
+    # Create project MCP config file by merging project configs
+    # Start with empty config file for merging
+    local temp_project_file=$(mktemp /tmp/claudebox-project-temp-$(date +%s)-$$.json 2>/dev/null || mktemp)
+    mcp_temp_files+=("$temp_project_file")
+    echo '{"mcpServers":{}}' > "$temp_project_file"
+    
+    # Merge shared project settings first
+    local merged_file=""
+    if [[ -f "$PROJECT_DIR/.claude/settings.json" ]]; then
+        merged_file=$(create_mcp_config_file "$PROJECT_DIR/.claude/settings.json" "$temp_project_file")
+        if [[ -n "$merged_file" ]]; then
+            mv "$merged_file" "$temp_project_file"
+        fi
+    fi
+    
+    # Merge local project settings (highest priority)
+    if [[ -f "$PROJECT_DIR/.claude/settings.local.json" ]]; then
+        merged_file=$(create_mcp_config_file "$PROJECT_DIR/.claude/settings.local.json" "$temp_project_file")
+        if [[ -n "$merged_file" ]]; then
+            mv "$merged_file" "$temp_project_file"
+        fi
+    fi
+    
+    # Check if we have any project servers
+    local project_count=$(jq '.mcpServers | length' "$temp_project_file" 2>/dev/null || echo "0")
+    if [[ "$project_count" -gt 0 ]]; then
+        project_mcp_file="$temp_project_file"
+        if [[ "$VERBOSE" == "true" ]]; then
+            printf "Found %s project MCP servers\n" "$project_count" >&2
+        fi
+        docker_args+=(-v "$project_mcp_file":/tmp/project-mcp-config.json:ro)
+        if [[ "$VERBOSE" == "true" ]]; then
+            echo "[DEBUG] Mounting project MCP configuration file" >&2
+        fi
+    else
+        rm -f "$temp_project_file"
+        project_mcp_file=""
+    fi
+    
+    
     # Add environment variables
     local project_name=$(basename "$PROJECT_DIR")
     local slot_name=$(basename "$PROJECT_SLOT_DIR")
