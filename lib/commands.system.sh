@@ -778,10 +778,76 @@ _cmd_special() {
         " 2>/dev/null || true
     fi
 
-    # Commit changes back to image
-    docker commit "$temp_container" "$IMAGE_NAME" >/dev/null
-    docker stop "$temp_container" >/dev/null 2>&1 || true
-    docker rm "$temp_container" >/dev/null 2>&1 || true
+    # Verify container state before committing
+    local container_status
+    container_status=$(docker inspect "$temp_container" --format '{{.State.Status}}' 2>/dev/null || echo "unknown")
+    
+    if [[ "$VERBOSE" == "true" ]]; then
+        printf "[DEBUG] Container %s status: %s\n" "$temp_container" "$container_status" >&2
+    fi
+    
+    if [[ "$container_status" != "exited" ]]; then
+        warn "Container did not exit cleanly (status: $container_status), attempting commit anyway..."
+    fi
+    
+    # Get current image ID before commit for comparison
+    local old_image_id
+    old_image_id=$(docker inspect "$IMAGE_NAME" --format '{{.Id}}' 2>/dev/null || echo "")
+    
+    if [[ "$VERBOSE" == "true" ]]; then
+        printf "[DEBUG] Pre-commit image ID: %s\n" "${old_image_id:0:12}" >&2
+    fi
+    
+    # Commit changes back to image with proper error handling
+    local commit_output
+    if commit_output=$(docker commit "$temp_container" "$IMAGE_NAME" 2>&1); then
+        # Get new image ID after commit
+        local new_image_id
+        new_image_id=$(docker inspect "$IMAGE_NAME" --format '{{.Id}}' 2>/dev/null || echo "")
+        
+        if [[ "$VERBOSE" == "true" ]]; then
+            printf "[DEBUG] Post-commit image ID: %s\n" "${new_image_id:0:12}" >&2
+        fi
+        
+        # Verify image actually changed
+        if [[ -n "$old_image_id" ]] && [[ "$old_image_id" == "$new_image_id" ]]; then
+            warn "Image commit succeeded but image ID unchanged - no modifications detected"
+        elif [[ "$VERBOSE" == "true" ]]; then
+            printf "[DEBUG] Image successfully updated: %s -> %s\n" "${old_image_id:0:12}" "${new_image_id:0:12}" >&2
+        fi
+        
+        # Additional verification for update commands
+        if [[ "$cmd" == "update" ]]; then
+            # Check if claude binary was actually modified in the new image
+            local claude_version_in_image
+            if claude_version_in_image=$(docker run --rm "$IMAGE_NAME" bash -c "source ~/.nvm/nvm.sh && nvm use default >/dev/null 2>&1 && claude --version" 2>/dev/null); then
+                if [[ "$VERBOSE" == "true" ]]; then
+                    printf "[DEBUG] Claude version in updated image: %s\n" "$claude_version_in_image" >&2
+                fi
+            else
+                warn "Could not verify Claude version in updated image"
+            fi
+        fi
+    else
+        error "Failed to commit container changes to image: $commit_output"
+    fi
+    
+    # Clean up container
+    if docker stop "$temp_container" >/dev/null 2>&1; then
+        if [[ "$VERBOSE" == "true" ]]; then
+            printf "[DEBUG] Container %s stopped successfully\n" "$temp_container" >&2
+        fi
+    else
+        warn "Failed to stop container $temp_container"
+    fi
+    
+    if docker rm "$temp_container" >/dev/null 2>&1; then
+        if [[ "$VERBOSE" == "true" ]]; then
+            printf "[DEBUG] Container %s removed successfully\n" "$temp_container" >&2
+        fi
+    else
+        warn "Failed to remove container $temp_container"
+    fi
     
     exit 0
 }

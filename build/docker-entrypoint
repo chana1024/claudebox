@@ -266,13 +266,48 @@ else
             fi
             
             # Capture the output of claude update to check if already up to date
+            echo "Running Claude update..."
+            local claude_version_before
+            claude_version_before=$(claude --version 2>/dev/null || echo "unknown")
+            
+            if [[ "${VERBOSE:-false}" == "true" ]]; then
+                echo "[DEBUG] Claude version before update: $claude_version_before" >&2
+            fi
+            
             update_output=$(claude update 2>&1)
+            local update_exit_code=$?
             echo "$update_output"
             
-            # Only run version check if an actual update occurred
-            if echo "$update_output" | grep -q "Successfully updated\|Installing update"; then
-                echo "Verifying update..."
-                claude --version
+            if [[ "${VERBOSE:-false}" == "true" ]]; then
+                echo "[DEBUG] Claude update exit code: $update_exit_code" >&2
+            fi
+            
+            # Check exit code first, then output patterns
+            if [[ $update_exit_code -eq 0 ]]; then
+                # Only run version check if an actual update occurred
+                if echo "$update_output" | grep -q "Successfully updated\|Installing update"; then
+                    echo "Verifying update..."
+                    local claude_version_after
+                    claude_version_after=$(claude --version 2>/dev/null || echo "unknown")
+                    echo "Claude version: $claude_version_after"
+                    
+                    # Compare versions if both are available
+                    if [[ "$claude_version_before" != "unknown" ]] && [[ "$claude_version_after" != "unknown" ]]; then
+                        if [[ "$claude_version_before" == "$claude_version_after" ]]; then
+                            echo "[WARNING] Claude version unchanged despite update success message" >&2
+                        elif [[ "${VERBOSE:-false}" == "true" ]]; then
+                            echo "[DEBUG] Claude version changed: $claude_version_before -> $claude_version_after" >&2
+                        fi
+                    fi
+                elif echo "$update_output" | grep -q "already up to date\|up-to-date\|already at latest"; then
+                    echo "[INFO] Claude is already up to date"
+                else
+                    echo "[WARNING] Update completed but no clear success/already-updated message detected" >&2
+                    echo "[DEBUG] Update output was: $update_output" >&2
+                fi
+            else
+                echo "[ERROR] Claude update command failed with exit code $update_exit_code" >&2
+                echo "[DEBUG] Update output was: $update_output" >&2
             fi
         '
     else
